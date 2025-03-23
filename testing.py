@@ -20,13 +20,11 @@ cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)  # Set resolution
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 cap.set(cv2.CAP_PROP_FPS, 30)  # Set FPS to 30
 
-# Define a crossing line (adjust as needed)
-line_y = 300  # Line's Y-coordinate
-line_color = (0, 0, 255)  # Red color for boundary line
-line_thickness = 2
+# Define an invisible restricted area (bounding box coordinates)
+box_x1, box_y1, box_x2, box_y2 = 200, 150, 400, 350  # Define the top-left and bottom-right corners
 
-# Store detected persons who crossed the line
-crossed_ids = {}  # {person_id: timestamp}
+# Store detected persons who entered the box
+entered_ids = {}  # {person_id: timestamp}
 cooldown_time = 10  # Cooldown period in seconds
 
 # Global variables for async DeepFace processing
@@ -34,8 +32,15 @@ gender_labels = {}  # {person_id: "Gender"}
 processing = {}  # Track processing status for each person
 
 def play_alert():
-    """Plays an alert sound when a person crosses the boundary."""
+    """Plays an alert sound when a person enters the restricted box."""
     winsound.Beep(1000, 500)  # 1000 Hz frequency for 500ms
+
+def save_screenshot(frame, track_id):
+    """Save a screenshot when an alert is triggered."""
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    filename = f"alert_{track_id}_{timestamp}.jpg"
+    cv2.imwrite(filename, frame)
+    print(f"Screenshot saved: {filename}")
 
 def analyze_frame(person_id, face_crop):
     """Run DeepFace asynchronously for gender detection."""
@@ -72,8 +77,8 @@ while cap.isOpened():
     # Track persons using DeepSORT
     tracked_objects = tracker.update_tracks(detections, frame=frame)
 
-    # Draw crossing line
-    cv2.line(frame, (0, line_y), (frame.shape[1], line_y), line_color, line_thickness)
+    # Uncomment to visualize the restricted box
+    # cv2.rectangle(frame, (box_x1, box_y1), (box_x2, box_y2), (0, 255, 0), 2)
 
     # Process tracked persons
     for track in tracked_objects:
@@ -83,7 +88,7 @@ while cap.isOpened():
         track_id = track.track_id
         bbox = track.to_ltwh()  # Get bounding box (left, top, width, height)
         x, y, w, h = map(int, bbox)
-        center_y = y + h // 2  # Find the vertical center of the person
+        center_x, center_y = x + w // 2, y + h // 2  # Person's center
 
         # Extract face for gender classification
         face_crop = frame[y:y+h, x:x+w]
@@ -92,15 +97,16 @@ while cap.isOpened():
         if track_id not in processing or not processing[track_id]:
             threading.Thread(target=analyze_frame, args=(track_id, face_crop), daemon=True).start()
 
-        # Check if person crosses the line
-        if center_y >= line_y:
+        # Check if person is inside the box
+        if box_x1 <= center_x <= box_x2 and box_y1 <= center_y <= box_y2:
             current_time = time.time()
             
             # Check cooldown to prevent duplicate alerts
-            if track_id not in crossed_ids or (current_time - crossed_ids[track_id]) > cooldown_time:
-                print(f"ALERT 🚨: Person {track_id} crossed the boundary!")
+            if track_id not in entered_ids or (current_time - entered_ids[track_id]) > cooldown_time:
+                print(f"ALERT 🚨: Person {track_id} entered the restricted area!")
                 threading.Thread(target=play_alert, daemon=True).start()  # Play alert sound
-                crossed_ids[track_id] = current_time  # Update last crossing time
+                save_screenshot(frame, track_id)  # Save screenshot
+                entered_ids[track_id] = current_time  # Update last entry time
 
         # Draw bounding box and ID
         cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
